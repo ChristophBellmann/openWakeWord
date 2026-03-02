@@ -17,6 +17,7 @@ from multiprocessing.pool import ThreadPool
 import os
 import re
 import logging
+import warnings
 from functools import partial
 from pathlib import Path
 import random
@@ -963,7 +964,13 @@ def generate_adversarial_texts(input_text: str, N: int, include_partial_phrase: 
 
         # Create phonemizer object
         from dp.phonemizer import Phonemizer
-        phonemizer = Phonemizer.from_checkpoint(phonemizer_mdl_path)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Environment variable TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD detected.*",
+                category=UserWarning,
+            )
+            phonemizer = Phonemizer.from_checkpoint(phonemizer_mdl_path)
 
     for phones, word in zip(input_text_phones, input_text.split()):
         if phones != []:
