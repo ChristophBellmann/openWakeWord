@@ -425,6 +425,16 @@ class Model(nn.Module):
 
         # Save ONNX model
         logging.info(f"####\nSaving ONNX mode as '{os.path.join(output_dir, model_name + '.onnx')}'")
+        # Reduce noisy exporter debug logs from onnxscript/onnx_ir when root logging is set to DEBUG.
+        for noisy_logger in (
+            "onnxscript",
+            "onnxscript._internal.values",
+            "onnxscript.version_converter",
+            "onnx_ir",
+            "onnx_ir.passes",
+        ):
+            logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
         model_to_save = copy.deepcopy(model).to("cpu")
         model_to_save.eval()
         with torch.inference_mode():
