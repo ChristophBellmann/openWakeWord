@@ -631,23 +631,34 @@ def augment_clips(
                 max_transpose_semitones=3,
                 p=augmentation_probabilities["PitchShift"],
                 sample_rate=16000,
-                mode="per_batch"
+                mode="per_batch",
+                output_type="dict"
             ),
-            torch_audiomentations.BandStopFilter(p=augmentation_probabilities["BandStopFilter"], mode="per_batch"),
+            torch_audiomentations.BandStopFilter(
+                p=augmentation_probabilities["BandStopFilter"],
+                mode="per_batch",
+                output_type="dict"
+            ),
             torch_audiomentations.AddColoredNoise(
                 min_snr_in_db=10, max_snr_in_db=30,
                 min_f_decay=-1, max_f_decay=2, p=augmentation_probabilities["AddColoredNoise"],
-                mode="per_batch"
+                mode="per_batch",
+                output_type="dict"
             ),
             torch_audiomentations.AddBackgroundNoise(
                 p=augmentation_probabilities["AddBackgroundNoise"],
                 background_paths=background_clip_paths,
                 min_snr_in_db=-10,
                 max_snr_in_db=15,
-                mode="per_batch"
+                mode="per_batch",
+                output_type="dict"
             ),
-            torch_audiomentations.Gain(max_gain_in_db=0, p=augmentation_probabilities["Gain"]),
-        ])
+            torch_audiomentations.Gain(
+                max_gain_in_db=0,
+                p=augmentation_probabilities["Gain"],
+                output_type="dict"
+            ),
+        ], output_type="dict")
     else:
         augment2 = torch_audiomentations.Compose([
             torch_audiomentations.PitchShift(
@@ -655,16 +666,26 @@ def augment_clips(
                 max_transpose_semitones=3,
                 p=augmentation_probabilities["PitchShift"],
                 sample_rate=16000,
-                mode="per_batch"
+                mode="per_batch",
+                output_type="dict"
             ),
-            torch_audiomentations.BandStopFilter(p=augmentation_probabilities["BandStopFilter"], mode="per_batch"),
+            torch_audiomentations.BandStopFilter(
+                p=augmentation_probabilities["BandStopFilter"],
+                mode="per_batch",
+                output_type="dict"
+            ),
             torch_audiomentations.AddColoredNoise(
                 min_snr_in_db=10, max_snr_in_db=30,
                 min_f_decay=-1, max_f_decay=2, p=augmentation_probabilities["AddColoredNoise"],
-                mode="per_batch"
+                mode="per_batch",
+                output_type="dict"
             ),
-            torch_audiomentations.Gain(max_gain_in_db=0, p=augmentation_probabilities["Gain"]),
-        ])
+            torch_audiomentations.Gain(
+                max_gain_in_db=0,
+                p=augmentation_probabilities["Gain"],
+                output_type="dict"
+            ),
+        ], output_type="dict")
 
     # Iterate through all clips and augment them
     for i in range(0, len(clip_paths), batch_size):
@@ -686,7 +707,10 @@ def augment_clips(
 
         # Do second pass augmentations
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        augmented_batch = augment2(samples=torch.vstack(augmented_clips).unsqueeze(dim=1).to(device), sample_rate=sr).squeeze(axis=1)
+        augmented_batch = augment2(
+            samples=torch.vstack(augmented_clips).unsqueeze(dim=1).to(device),
+            sample_rate=sr
+        ).samples.squeeze(axis=1)
 
         # Do reverberation
         if augmentation_probabilities["RIR"] >= np.random.random() and RIR_paths != []:
@@ -713,20 +737,20 @@ def create_fixed_size_clip(x, n_samples, sr=16000, start=None, end_jitter=.200):
     Returns:
         ndarray: A new array of audio data of the specified length
     """
-    dat = np.zeros(n_samples)
+    dat = np.zeros(n_samples, dtype=np.float32)
     end_jitter = int(np.random.uniform(0, end_jitter)*sr)
     if start is None:
         start = max(0, n_samples - (int(len(x))+end_jitter))
 
     if len(x) > n_samples:
         if np.random.random() >= 0.5:
-            dat = x[0:n_samples].numpy()
+            dat = x[0:n_samples].numpy().astype(np.float32, copy=False)
         else:
-            dat = x[-n_samples:].numpy()
+            dat = x[-n_samples:].numpy().astype(np.float32, copy=False)
     else:
         dat[start:start+len(x)] = x
 
-    return dat
+    return dat.astype(np.float32, copy=False)
 
 
 # Load batches of data from mmaped numpy arrays

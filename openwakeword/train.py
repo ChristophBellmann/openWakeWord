@@ -425,9 +425,15 @@ class Model(nn.Module):
 
         # Save ONNX model
         logging.info(f"####\nSaving ONNX mode as '{os.path.join(output_dir, model_name + '.onnx')}'")
-        model_to_save = copy.deepcopy(model)
-        torch.onnx.export(model_to_save.to("cpu"), torch.rand(self.input_shape)[None, ],
-                          os.path.join(output_dir, model_name + ".onnx"), opset_version=13)
+        model_to_save = copy.deepcopy(model).to("cpu")
+        model_to_save.eval()
+        with torch.inference_mode():
+            torch.onnx.export(
+                model_to_save,
+                torch.rand(self.input_shape)[None, ],
+                os.path.join(output_dir, model_name + ".onnx"),
+                opset_version=18
+            )
 
         return None
 

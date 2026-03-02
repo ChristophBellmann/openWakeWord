@@ -80,16 +80,29 @@ class AudioFeatures():
             sessionOptions.inter_op_num_threads = ncpu
             sessionOptions.intra_op_num_threads = ncpu
 
+            # Choose best available ONNX provider for requested device.
+            available_providers = ort.get_available_providers()
+            if device == "gpu":
+                preferred = ["ROCMExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+            else:
+                preferred = ["CPUExecutionProvider"]
+            providers = [p for p in preferred if p in available_providers] or ["CPUExecutionProvider"]
+
             # Melspectrogram model
-            self.melspec_model = ort.InferenceSession(melspec_model_path, sess_options=sessionOptions,
-                                                      providers=["CUDAExecutionProvider"] if device == "gpu" else ["CPUExecutionProvider"])
+            self.melspec_model = ort.InferenceSession(
+                melspec_model_path,
+                sess_options=sessionOptions,
+                providers=providers
+            )
             self.onnx_execution_provider = self.melspec_model.get_providers()[0]
             self.melspec_model_predict = lambda x: self.melspec_model.run(None, {'input': x})
 
             # Audio embedding model
-            self.embedding_model = ort.InferenceSession(embedding_model_path, sess_options=sessionOptions,
-                                                        providers=["CUDAExecutionProvider"] if device == "gpu"
-                                                        else ["CPUExecutionProvider"])
+            self.embedding_model = ort.InferenceSession(
+                embedding_model_path,
+                sess_options=sessionOptions,
+                providers=providers
+            )
             self.embedding_model_predict = lambda x: self.embedding_model.run(None, {'input_1': x})[0].squeeze()
 
         elif inference_framework == "tflite":
@@ -273,7 +286,7 @@ class AudioFeatures():
         for i in range(0, max(batch_size, x.shape[0]), batch_size):
             batch = x[i:i+batch_size]
 
-            if "CUDA" in self.onnx_execution_provider:
+            if "CUDA" in self.onnx_execution_provider or "ROCM" in self.onnx_execution_provider:
                 result = self._get_melspectrogram(batch)
 
             elif pool:
@@ -335,7 +348,7 @@ class AudioFeatures():
 
             if len(batch) >= batch_size or ndx+1 == x.shape[0]:
                 batch = np.array(batch).astype(np.float32)
-                if "CUDA" in self.onnx_execution_provider:
+                if "CUDA" in self.onnx_execution_provider or "ROCM" in self.onnx_execution_provider:
                     result = self.embedding_model_predict(batch)
 
                 elif pool:
