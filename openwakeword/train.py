@@ -12,6 +12,7 @@ import scipy
 import collections
 import argparse
 import logging
+import itertools
 from tqdm import tqdm
 import yaml
 from pathlib import Path
@@ -285,7 +286,7 @@ class Model(nn.Module):
         # Sequence 2
         logging.info("#"*50 + "\nStarting training sequence 2...\n" + "#"*50)
         lr = lr/10
-        steps = steps/10
+        steps = int(steps/10)
 
         # Adjust weights as needed based on false positive per hour performance from first sequence
         if self.best_val_fp > target_fp_per_hour:
@@ -293,7 +294,7 @@ class Model(nn.Module):
             logging.info("Increasing weight on negative examples to reduce false positives...")
 
         weights = np.linspace(1, max_negative_weight, int(steps)).tolist()
-        val_steps = np.linspace(1, steps, 20).astype(np.int16)
+        val_steps = np.linspace(1, steps, 20).astype(np.int64)
         self.train_model(
                     X=X_train,
                     X_val=X_val,
@@ -313,7 +314,7 @@ class Model(nn.Module):
             logging.info("Increasing weight on negative examples to reduce false positives...")
 
         weights = np.linspace(1, max_negative_weight, int(steps)).tolist()
-        val_steps = np.linspace(1, steps, 20).astype(np.int16)
+        val_steps = np.linspace(1, steps, 20).astype(np.int64)
         self.train_model(
                     X=X_train,
                     X_val=X_val,
@@ -835,7 +836,6 @@ if __name__ == '__main__':
 
     # Create openwakeword model
     if args.train_model is True:
-        F = openwakeword.utils.AudioFeatures(device='cpu')
         input_shape = np.load(os.path.join(feature_save_dir, "positive_features_test.npy")).shape[1:]
 
         oww = Model(n_classes=1, input_shape=input_shape, model_type=config["model_type"],
@@ -865,26 +865,28 @@ if __name__ == '__main__':
         config["feature_data_files"]['adversarial_negative'] = os.path.join(feature_save_dir, "negative_features_train.npy")
 
         # Make PyTorch data loaders for training and validation data
-        batch_generator = mmap_batch_generator(
-            config["feature_data_files"],
-            n_per_class=config["batch_n_per_class"],
-            data_transform_funcs=data_transforms,
-            label_transform_funcs=label_transforms
-        )
+        def batch_generator_factory():
+            return mmap_batch_generator(
+                config["feature_data_files"],
+                n_per_class=config["batch_n_per_class"],
+                data_transform_funcs=data_transforms,
+                label_transform_funcs=label_transforms
+            )
 
         class IterDataset(torch.utils.data.IterableDataset):
-            def __init__(self, generator):
-                self.generator = generator
+            def __init__(self, generator_factory, max_steps):
+                self.generator_factory = generator_factory
+                self.max_steps = max_steps
 
             def __iter__(self):
-                return self.generator
+                return itertools.islice(self.generator_factory(), self.max_steps)
 
         n_cpus = os.cpu_count()
         if n_cpus is None:
             n_cpus = 1
         else:
             n_cpus = n_cpus//2
-        X_train = torch.utils.data.DataLoader(IterDataset(batch_generator),
+        X_train = torch.utils.data.DataLoader(IterDataset(batch_generator_factory, config["steps"]),
                                               batch_size=None, num_workers=n_cpus, prefetch_factor=16)
 
         X_val_fp = np.load(config["false_positive_validation_data_path"])
