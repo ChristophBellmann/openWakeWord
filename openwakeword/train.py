@@ -10,6 +10,7 @@ import uuid
 import numpy as np
 import scipy
 import collections
+import random
 import argparse
 import logging
 import itertools
@@ -22,6 +23,71 @@ from openwakeword.utils import compute_features_from_generator
 from openwakeword.utils import AudioFeatures
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_choice(name: str, default: str = "auto") -> str:
+    value = os.environ.get(name, default).strip().lower()
+    if value not in {"auto", "cpu", "gpu"}:
+        raise ValueError(f"Unsupported {name}={value!r}")
+    return value
+
+
+def _resolve_torch_device(requested: str) -> torch.device:
+    if requested == "gpu":
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU training requested, but torch.cuda.is_available() is false")
+        return torch.device("cuda:0")
+    if requested == "cpu":
+        return torch.device("cpu")
+    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+def _feature_device_mode() -> str:
+    requested = _env_choice("OPENWAKEWORD_FEATURE_DEVICE")
+    return "gpu" if _resolve_torch_device(requested).type == "cuda" else "cpu"
+
+
+def _configure_reproducibility_from_env() -> int | None:
+    seed_value = os.environ.get("OPENWAKEWORD_SEED", "").strip()
+    if not seed_value:
+        return None
+
+    seed = int(seed_value)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    deterministic = _env_flag("OPENWAKEWORD_DETERMINISTIC")
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+    logging.info(
+        "Using openWakeWord seed=%d deterministic=%s feature_device=%s train_device=%s",
+        seed,
+        deterministic,
+        _feature_device_mode(),
+        _resolve_torch_device(_env_choice("OPENWAKEWORD_TRAIN_DEVICE")),
+    )
+    return seed
+
+
+def _train_num_workers() -> int:
+    if workers := os.environ.get("OPENWAKEWORD_TRAIN_WORKERS", "").strip():
+        return max(0, int(workers))
+    n_cpus = os.cpu_count()
+    if n_cpus is None:
+        return 1
+    if _env_flag("OPENWAKEWORD_DETERMINISTIC"):
+        return 0
+    return max(1, n_cpus // 2)
+
+
 # Base model class for an openwakeword model
 class Model(nn.Module):
     def __init__(self, n_classes=1, input_shape=(16, 96), model_type="dnn",
@@ -32,7 +98,7 @@ class Model(nn.Module):
         self.n_classes = n_classes
         self.input_shape = input_shape
         self.seconds_per_example = seconds_per_example
-        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.device = _resolve_torch_device(_env_choice("OPENWAKEWORD_TRAIN_DEVICE"))
         self.best_models = []
         self.best_model_scores = []
         self.best_val_fp = 1000
@@ -657,6 +723,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     config = yaml.load(open(args.training_config, 'r').read(), yaml.Loader)
+    _configure_reproducibility_from_env()
 
     # imports Piper for synthetic sample generation
     sys.path.insert(0, os.path.abspath(config["piper_sample_generator_path"]))
@@ -808,29 +875,31 @@ if __name__ == '__main__':
                 n_cpus = 1
             else:
                 n_cpus = n_cpus//2
+            feature_device = _feature_device_mode()
+            feature_ncpu = n_cpus if feature_device == "cpu" else 1
             compute_features_from_generator(positive_clips_train_generator, n_total=len(os.listdir(positive_train_output_dir)),
                                             clip_duration=config["total_length"],
                                             output_file=os.path.join(feature_save_dir, "positive_features_train.npy"),
-                                            device="gpu" if torch.cuda.is_available() else "cpu",
-                                            ncpu=n_cpus if not torch.cuda.is_available() else 1)
+                                            device=feature_device,
+                                            ncpu=feature_ncpu)
 
             compute_features_from_generator(negative_clips_train_generator, n_total=len(os.listdir(negative_train_output_dir)),
                                             clip_duration=config["total_length"],
                                             output_file=os.path.join(feature_save_dir, "negative_features_train.npy"),
-                                            device="gpu" if torch.cuda.is_available() else "cpu",
-                                            ncpu=n_cpus if not torch.cuda.is_available() else 1)
+                                            device=feature_device,
+                                            ncpu=feature_ncpu)
 
             compute_features_from_generator(positive_clips_test_generator, n_total=len(os.listdir(positive_test_output_dir)),
                                             clip_duration=config["total_length"],
                                             output_file=os.path.join(feature_save_dir, "positive_features_test.npy"),
-                                            device="gpu" if torch.cuda.is_available() else "cpu",
-                                            ncpu=n_cpus if not torch.cuda.is_available() else 1)
+                                            device=feature_device,
+                                            ncpu=feature_ncpu)
 
             compute_features_from_generator(negative_clips_test_generator, n_total=len(os.listdir(negative_test_output_dir)),
                                             clip_duration=config["total_length"],
                                             output_file=os.path.join(feature_save_dir, "negative_features_test.npy"),
-                                            device="gpu" if torch.cuda.is_available() else "cpu",
-                                            ncpu=n_cpus if not torch.cuda.is_available() else 1)
+                                            device=feature_device,
+                                            ncpu=feature_ncpu)
         else:
             logging.warning("Openwakeword features already exist, skipping data augmentation and feature generation")
 
@@ -881,13 +950,14 @@ if __name__ == '__main__':
             def __iter__(self):
                 return itertools.islice(self.generator_factory(), self.max_steps)
 
-        n_cpus = os.cpu_count()
-        if n_cpus is None:
-            n_cpus = 1
-        else:
-            n_cpus = n_cpus//2
-        X_train = torch.utils.data.DataLoader(IterDataset(batch_generator_factory, config["steps"]),
-                                              batch_size=None, num_workers=n_cpus, prefetch_factor=16)
+        train_workers = _train_num_workers()
+        dataloader_kwargs = {"batch_size": None, "num_workers": train_workers}
+        if train_workers > 0:
+            dataloader_kwargs["prefetch_factor"] = 16
+        X_train = torch.utils.data.DataLoader(
+            IterDataset(batch_generator_factory, config["steps"]),
+            **dataloader_kwargs,
+        )
 
         X_val_fp = np.load(config["false_positive_validation_data_path"])
         X_val_fp = np.array([X_val_fp[i:i+input_shape[0]] for i in range(0, X_val_fp.shape[0]-input_shape[0], 1)])  # reshape to match model

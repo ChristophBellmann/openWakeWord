@@ -36,6 +36,19 @@ import mutagen
 import acoustics
 
 
+def _resolve_feature_torch_device() -> torch.device:
+    requested = os.environ.get("OPENWAKEWORD_FEATURE_DEVICE", "auto").strip().lower()
+    if requested not in {"auto", "cpu", "gpu"}:
+        raise ValueError(f"Unsupported OPENWAKEWORD_FEATURE_DEVICE={requested!r}")
+    if requested == "gpu":
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU feature path requested, but torch.cuda.is_available() is false")
+        return torch.device("cuda:0")
+    if requested == "cpu":
+        return torch.device("cpu")
+    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
 # Load audio clips and structure into clips of the same length
 def stack_clips(audio_data, clip_size=16000*2):
     """
@@ -685,7 +698,7 @@ def augment_clips(
             augmented_clips.append(torch.from_numpy(augment1(samples=clip_data, sample_rate=sr)))
 
         # Do second pass augmentations
-        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        device = _resolve_feature_torch_device()
         augmented_batch = augment2(samples=torch.vstack(augmented_clips).unsqueeze(dim=1).to(device), sample_rate=sr).squeeze(axis=1)
 
         # Do reverberation
